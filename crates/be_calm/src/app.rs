@@ -1,23 +1,28 @@
-//! The egui application: setup screen -> focus screen -> summary.
+//! The egui application: setup -> focus -> (break ->) summary.
 
-use crate::platform::watcher::{WatchEvent, WatchOptions, Watcher};
+use crate::platform::watcher::{TitleRules, WatchEvent, WatchOptions, Watcher};
 use crate::platform::{process, shell, WindowedApp};
-use be_calm_core::config::{config_path, file_stem_of, MAX_ALLOWED_APPS};
+use be_calm_core::config::{config_path, file_stem_of, history_path, MAX_ALLOWED_APPS};
+use be_calm_core::history::{self, Record};
 use be_calm_core::session::{exit_challenge_passed, format_clock};
+use be_calm_core::titles::parse_keywords;
 use be_calm_core::{AllowedApp, Config, Policy, Session, SessionSummary};
 use egui::{Color32, RichText, ViewportCommand, WindowLevel};
 use std::time::{Duration, Instant};
 
 const TOAST_TTL: Duration = Duration::from_secs(4);
+const RECENT_RECORDS: usize = 5;
 
 enum Screen {
     Setup,
     Focus(FocusState),
+    Break { until: Instant, total: Duration },
     Done(SessionSummary),
 }
 
 struct FocusState {
     session: Session,
+    started_at: String,
     watcher: Watcher,
     show_exit: bool,
     exit_input: String,
@@ -29,6 +34,10 @@ pub struct BeCalmApp {
     screen: Screen,
     picker: Option<Vec<WindowedApp>>,
     error: Option<String>,
+    /// Editable text form of `cfg.blocked_titles`.
+    titles_text: String,
+    records: Vec<Record>,
+    theme_applied: Option<bool>,
 }
 
 impl BeCalmApp {
@@ -40,12 +49,29 @@ impl BeCalmApp {
                 Config::default()
             }
         };
+        let titles_text = cfg.blocked_titles.join("\n");
+        let records = history::load(&history_path());
         Self {
             cfg,
             screen: Screen::Setup,
             picker: None,
             error: None,
+            titles_text,
+            records,
+            theme_applied: None,
         }
+    }
+
+    fn apply_theme(&mut self, ctx: &egui::Context) {
+        if self.theme_applied == Some(self.cfg.dark_theme) {
+            return;
+        }
+        self.theme_applied = Some(self.cfg.dark_theme);
+        ctx.set_theme(if self.cfg.dark_theme {
+            egui::Theme::Dark
+        } else {
+            egui::Theme::Light
+        });
     }
 
     fn save_config(&mut self) {
@@ -66,6 +92,7 @@ impl BeCalmApp {
     }
 
     fn start_session(&mut self, ctx: &egui::Context) {
+        self.cfg.blocked_titles = parse_keywords(&self.titles_text);
         self.save_config();
         let policy = Policy::new(
             &self.cfg.allowed_apps,
@@ -80,10 +107,8 @@ impl BeCalmApp {
             shell::hide_desktop_icons();
         }
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::AlwaysOnTop));
-        let session = Session::start(
-            Instant::now(),
-            Duration::from_secs(u64::from(self.cfg.session_minutes) * 60),
-        );
+        let duration = Duration::from_secs(u64::from(self.cfg.session_minutes) * 60);
+        let session = Session::start(Instant::now(), duration);
         log::info!(
             "session started: {} min, apps: {:?}",
             self.cfg.session_minutes,
@@ -93,15 +118,20 @@ impl BeCalmApp {
                 .map(|a| &a.name)
                 .collect::<Vec<_>>()
         );
+        let watcher = Watcher::start(
+            policy,
+            WatchOptions {
+                block_windowless: self.cfg.block_windowless,
+                guard_foreground: self.cfg.guard_foreground,
+            },
+            TitleRules {
+                keywords: self.cfg.blocked_titles.clone(),
+            },
+        );
         self.screen = Screen::Focus(FocusState {
             session,
-            watcher: Watcher::start(
-                policy,
-                WatchOptions {
-                    block_windowless: self.cfg.block_windowless,
-                    guard_foreground: self.cfg.guard_foreground,
-                },
-            ),
+            started_at: chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+            watcher,
             show_exit: false,
             exit_input: String::new(),
             toast: None,
@@ -119,7 +149,28 @@ impl BeCalmApp {
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(WindowLevel::Normal));
         let summary = state.session.summary(Instant::now(), ended_early);
         log::info!("session ended: {summary:?}");
-        self.screen = Screen::Done(summary);
+
+        let apps = self
+            .cfg
+            .allowed_apps
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        let record = Record::from_summary(state.started_at.clone(), &summary, apps);
+        if let Err(e) = history::append(&history_path(), &record) {
+            log::error!("history append failed: {e}");
+        }
+        self.records.push(record);
+
+        if !ended_early && self.cfg.break_minutes > 0 {
+            let total = Duration::from_secs(u64::from(self.cfg.break_minutes) * 60);
+            self.screen = Screen::Break {
+                until: Instant::now() + total,
+                total,
+            };
+        } else {
+            self.screen = Screen::Done(summary);
+        }
     }
 
     // ---------------------------------------------------------------- setup
@@ -167,8 +218,13 @@ impl BeCalmApp {
         ui.add_space(12.0);
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("時間");
+            ui.label("集中");
             ui.add(egui::Slider::new(&mut self.cfg.session_minutes, 5..=180).suffix(" 分"));
+        });
+        ui.horizontal(|ui| {
+            ui.label("休憩");
+            ui.add(egui::Slider::new(&mut self.cfg.break_minutes, 0..=30).suffix(" 分"))
+                .on_hover_text("集中時間をやりきった後の休憩。0 で休憩なし。");
         });
         ui.checkbox(&mut self.cfg.hide_taskbar, "タスクバーを隠す");
         ui.checkbox(
@@ -182,18 +238,19 @@ impl BeCalmApp {
         .on_hover_text(
             "Alt+Tab や Win キーで既に開いているアプリに切り替えても、すぐ最小化されます。",
         );
-        ui.checkbox(
-            &mut self.cfg.block_windowless,
-            "ウィンドウを持たない裏方プロセスも止める（厳格モード）",
-        )
-        .on_hover_text("通常はウィンドウを表示したアプリだけを止めます。OneDrive などの補助プロセスを巻き込まないためです。");
-        ui.collapsing("途中で抜けるときに入力する文", |ui| {
+        ui.checkbox(&mut self.cfg.dark_theme, "ダークテーマ");
+        ui.collapsing("詳細", |ui| {
+            ui.checkbox(&mut self.cfg.block_windowless, "ウィンドウを持たない裏方プロセスも止める（厳格モード）")
+                .on_hover_text("通常はウィンドウを表示したアプリだけを止めます。OneDrive などの補助プロセスを巻き込まないためです。");
+            ui.label("タイトルにこの語を含むウィンドウはタブを閉じる（1行に1つ、または , 区切り）:");
+            ui.add(egui::TextEdit::multiline(&mut self.titles_text).desired_rows(4).desired_width(f32::INFINITY));
+            ui.label("途中で抜けるときに入力する文:");
             ui.text_edit_multiline(&mut self.cfg.exit_phrase);
         });
 
         ui.add_space(12.0);
         if let Some(err) = &self.error {
-            ui.colored_label(Color32::from_rgb(200, 60, 60), err);
+            ui.colored_label(Color32::from_rgb(220, 80, 80), err);
         }
         let can = self.cfg.can_start();
         if ui
@@ -207,6 +264,33 @@ impl BeCalmApp {
         }
         if !can {
             ui.label(RichText::new("アプリを1つ以上選ぶと開始できます").weak());
+        }
+
+        self.ui_history(ui);
+    }
+
+    fn ui_history(&self, ui: &mut egui::Ui) {
+        if self.records.is_empty() {
+            return;
+        }
+        ui.add_space(12.0);
+        ui.separator();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let total = history::total_for_day(&self.records, &today);
+        ui.label(RichText::new(format!("今日の集中: {}", format_clock(total))).strong());
+        for r in self.records.iter().rev().take(RECENT_RECORDS) {
+            let when = r.started.get(5..16).unwrap_or(&r.started).replace('T', " ");
+            let mark = if r.ended_early { "途中" } else { "完走" };
+            ui.label(
+                RichText::new(format!(
+                    "{when}  {}  {mark}  ブロック{}  {}",
+                    format_clock(r.elapsed()),
+                    r.blocked,
+                    r.apps.join(" / ")
+                ))
+                .weak()
+                .small(),
+            );
         }
     }
 
@@ -274,6 +358,12 @@ impl BeCalmApp {
                     state.toast = Some((format!("{name} は今は使えません。"), now));
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                 }
+                WatchEvent::TitleBlocked { keyword, title } => {
+                    state.toast = Some((format!("「{keyword}」のタブを閉じました。"), now));
+                    state
+                        .session
+                        .record_block(now, std::path::PathBuf::from(title));
+                }
                 WatchEvent::KillFailed { pid, exe, reason } => {
                     log::info!("ui: kill failed pid {pid}");
                     let name = file_stem_of(&exe);
@@ -313,12 +403,23 @@ impl BeCalmApp {
         if let Some((msg, at)) = &state.toast {
             if now.duration_since(*at) < TOAST_TTL {
                 ui.add_space(8.0);
+                let (bg, fg) = if self.cfg.dark_theme {
+                    (
+                        Color32::from_rgb(90, 70, 20),
+                        Color32::from_rgb(255, 235, 180),
+                    )
+                } else {
+                    (
+                        Color32::from_rgb(255, 240, 200),
+                        Color32::from_rgb(90, 60, 0),
+                    )
+                };
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(255, 240, 200))
+                    .fill(bg)
                     .inner_margin(8.0)
                     .corner_radius(6.0)
                     .show(ui, |ui| {
-                        ui.colored_label(Color32::from_rgb(90, 60, 0), msg);
+                        ui.colored_label(fg, msg);
                     });
             } else {
                 state.toast = None;
@@ -358,6 +459,61 @@ impl BeCalmApp {
         }
     }
 
+    // ---------------------------------------------------------------- break
+
+    fn ui_break(&mut self, ui: &mut egui::Ui, until: Instant, total: Duration) {
+        let now = Instant::now();
+        let left = until.saturating_duration_since(now);
+        let mut next: Option<Screen> = None;
+        ui.vertical_centered(|ui| {
+            ui.add_space(24.0);
+            ui.label(RichText::new("やりきりました。休憩").size(24.0).strong());
+            ui.label(RichText::new(format_clock(left)).size(56.0).strong());
+            let done = 1.0 - (left.as_secs_f32() / total.as_secs_f32().max(1.0));
+            ui.add(egui::ProgressBar::new(done).desired_width(360.0));
+            ui.add_space(16.0);
+            if left.is_zero() {
+                ui.label("休憩おわり。");
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button(RichText::new("次の集中を始める").size(18.0))
+                    .clicked()
+                {
+                    next = Some(Screen::Setup);
+                    // start right away with the same settings
+                }
+                if ui.button("今日はここまで").clicked() {
+                    next = Some(Screen::Done(self.last_summary()));
+                }
+            });
+        });
+        if let Some(screen) = next {
+            let go = matches!(screen, Screen::Setup);
+            self.screen = screen;
+            if go {
+                self.start_session(ui.ctx());
+            }
+        }
+    }
+
+    fn last_summary(&self) -> SessionSummary {
+        match self.records.last() {
+            Some(r) => SessionSummary {
+                planned: Duration::from_secs(r.planned_secs),
+                elapsed: r.elapsed(),
+                blocked_count: r.blocked as usize,
+                ended_early: r.ended_early,
+            },
+            None => SessionSummary {
+                planned: Duration::ZERO,
+                elapsed: Duration::ZERO,
+                blocked_count: 0,
+                ended_early: false,
+            },
+        }
+    }
+
     // ----------------------------------------------------------------- done
 
     fn ui_done(&mut self, ui: &mut egui::Ui, s: &SessionSummary) {
@@ -378,9 +534,11 @@ impl BeCalmApp {
                 format_clock(s.elapsed),
                 format_clock(s.planned)
             ));
+            ui.label(format!("気を散らすものを {} 回止めました", s.blocked_count));
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             ui.label(format!(
-                "気を散らすアプリを {} 回止めました",
-                s.blocked_count
+                "今日の合計: {}",
+                format_clock(history::total_for_day(&self.records, &today))
             ));
             ui.add_space(24.0);
             if ui.button(RichText::new("もう一度").size(18.0)).clicked() {
@@ -393,6 +551,7 @@ impl BeCalmApp {
 impl eframe::App for BeCalmApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.apply_theme(&ctx);
         // Block the window's close button during a session; route to the challenge.
         if ctx.input(|i| i.viewport().close_requested()) {
             if let Screen::Focus(state) = &mut self.screen {
@@ -401,17 +560,23 @@ impl eframe::App for BeCalmApp {
             }
         }
 
-        egui::CentralPanel::default().show(ui, |ui| match &self.screen {
-            Screen::Setup => self.ui_setup(ui),
-            Screen::Focus(_) => self.ui_focus(ui),
-            Screen::Done(s) => {
-                let s = s.clone();
-                self.ui_done(ui, &s)
-            }
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| match &self.screen {
+                Screen::Setup => self.ui_setup(ui),
+                Screen::Focus(_) => self.ui_focus(ui),
+                Screen::Break { until, total } => {
+                    let (u, t) = (*until, *total);
+                    self.ui_break(ui, u, t)
+                }
+                Screen::Done(s) => {
+                    let s = s.clone();
+                    self.ui_done(ui, &s)
+                }
+            });
         });
         self.ui_picker(&ctx);
 
-        if matches!(self.screen, Screen::Focus(_)) {
+        if matches!(self.screen, Screen::Focus(_) | Screen::Break { .. }) {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
     }

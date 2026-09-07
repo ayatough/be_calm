@@ -38,6 +38,11 @@ pub struct Config {
     /// Minimize any disallowed window that reaches the foreground (covers
     /// Alt+Tab, the Win key, and apps that were already open).
     pub guard_foreground: bool,
+    /// Window-title keywords that close the tab even inside an allowed app.
+    pub blocked_titles: Vec<String>,
+    /// Break length after a completed session; 0 disables breaks.
+    pub break_minutes: u32,
+    pub dark_theme: bool,
     pub exit_phrase: String,
 }
 
@@ -50,6 +55,12 @@ impl Default for Config {
             hide_desktop_icons: true,
             block_windowless: false,
             guard_foreground: true,
+            blocked_titles: crate::titles::DEFAULT_BLOCKED_TITLES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            break_minutes: 10,
+            dark_theme: true,
             exit_phrase: DEFAULT_EXIT_PHRASE.to_string(),
         }
     }
@@ -144,6 +155,10 @@ pub fn data_dir() -> PathBuf {
 
 pub fn config_path() -> PathBuf {
     data_dir().join("config.toml")
+}
+
+pub fn history_path() -> PathBuf {
+    data_dir().join("history.jsonl")
 }
 
 /// File name component of a Windows path, split on either separator.

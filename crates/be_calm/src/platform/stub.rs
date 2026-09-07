@@ -29,6 +29,7 @@ pub mod process {
         None
     }
     pub fn minimize(_hwnd: isize) {}
+    pub fn send_close_tab() {}
     pub fn launch(path: &Path) -> Result<(), String> {
         std::process::Command::new(path)
             .spawn()

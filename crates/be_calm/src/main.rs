@@ -53,6 +53,9 @@ fn dry_watch(secs: u64) {
             block_windowless: cfg.block_windowless,
             guard_foreground: cfg.guard_foreground,
         },
+        platform::watcher::TitleRules {
+            keywords: cfg.blocked_titles.clone(),
+        },
     );
     let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < end {

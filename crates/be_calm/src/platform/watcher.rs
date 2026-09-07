@@ -23,6 +23,10 @@ pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Minimum gap between two foreground notices for the same window, so a
 /// window fighting to come back does not flood the UI.
 const FOREGROUND_NOTICE_GAP: Duration = Duration::from_secs(3);
+/// Minimum gap between two Ctrl+W presses (a tab needs a moment to close).
+const TITLE_CLOSE_GAP: Duration = Duration::from_millis(700);
+/// After this many Ctrl+W presses without effect, minimize the window instead.
+const TITLE_CLOSE_MAX_TRIES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
@@ -41,6 +45,11 @@ pub enum WatchEvent {
         pid: u32,
         exe: PathBuf,
     },
+    /// An allowed window showed a blocked keyword in its title; Ctrl+W was sent.
+    TitleBlocked {
+        keyword: String,
+        title: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,6 +60,12 @@ pub struct WatchOptions {
     pub guard_foreground: bool,
 }
 
+/// Non-`Copy` part of the options.
+#[derive(Debug, Clone, Default)]
+pub struct TitleRules {
+    pub keywords: Vec<String>,
+}
+
 pub struct Watcher {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
@@ -58,13 +73,13 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn start(policy: Policy, opts: WatchOptions) -> Self {
+    pub fn start(policy: Policy, opts: WatchOptions, titles: TitleRules) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let stop2 = stop.clone();
         let handle = std::thread::Builder::new()
             .name("be_calm-watcher".into())
-            .spawn(move || run(policy, opts, stop2, tx))
+            .spawn(move || run(policy, opts, titles, stop2, tx))
             .expect("spawn watcher thread");
         Self {
             stop,
@@ -95,6 +110,11 @@ struct Judge {
     policy: Policy,
     lineage: Lineage,
     opts: WatchOptions,
+    titles: TitleRules,
+    /// Last time Ctrl+W was sent, so a stubborn page is not spammed.
+    last_close_tab: Option<Instant>,
+    /// (hwnd, consecutive Ctrl+W attempts) for the current blocked title.
+    title_attempts: Option<(isize, u32)>,
     /// Rejected processes waiting to show a window before we kill them.
     pending: HashMap<u32, PathBuf>,
     /// Last time we reported a given window being pushed back.
@@ -170,7 +190,8 @@ impl Judge {
         }
     }
 
-    /// Push back a foreground window that belongs to a disallowed app.
+    /// Push back a foreground window that belongs to a disallowed app (if
+    /// enabled), or close a blocked-title tab inside an allowed one.
     fn guard_foreground(&mut self, now: Instant) {
         let Some(fg) = process::foreground() else {
             return;
@@ -192,6 +213,10 @@ impl Judge {
             );
         }
         if allowed {
+            self.guard_title(&fg, now);
+            return;
+        }
+        if !self.opts.guard_foreground {
             return;
         }
         process::minimize(fg.hwnd);
@@ -210,7 +235,55 @@ impl Judge {
     }
 }
 
-fn run(policy: Policy, opts: WatchOptions, stop: Arc<AtomicBool>, tx: Sender<WatchEvent>) {
+impl Judge {
+    /// Close the current tab of an allowed window whose title is blocked.
+    /// If Ctrl+W does not make the title go away after a few tries (the app
+    /// is not a browser), fall back to minimizing the window.
+    fn guard_title(&mut self, fg: &super::Foreground, now: Instant) {
+        let Some(keyword) = be_calm_core::titles::blocked_keyword(&fg.title, &self.titles.keywords)
+        else {
+            self.title_attempts = None;
+            return;
+        };
+        if self
+            .last_close_tab
+            .is_some_and(|t| now.duration_since(t) < TITLE_CLOSE_GAP)
+        {
+            return;
+        }
+        self.last_close_tab = Some(now);
+        let attempts = match self.title_attempts {
+            Some((hwnd, n)) if hwnd == fg.hwnd => n + 1,
+            _ => 1,
+        };
+        self.title_attempts = Some((fg.hwnd, attempts));
+        if attempts > TITLE_CLOSE_MAX_TRIES {
+            log::info!("blocked title {:?} did not close; minimizing", fg.title);
+            process::minimize(fg.hwnd);
+            self.title_attempts = None;
+        } else {
+            log::info!(
+                "blocked title {:?} (keyword {keyword}); sending Ctrl+W",
+                fg.title
+            );
+            process::send_close_tab();
+        }
+        if attempts == 1 {
+            let _ = self.tx.send(WatchEvent::TitleBlocked {
+                keyword: keyword.to_string(),
+                title: fg.title.clone(),
+            });
+        }
+    }
+}
+
+fn run(
+    policy: Policy,
+    opts: WatchOptions,
+    titles: TitleRules,
+    stop: Arc<AtomicBool>,
+    tx: Sender<WatchEvent>,
+) {
     // Baseline: everything alive right now is grandfathered in, and every
     // already-running *user* app is trusted so the helpers it keeps spawning
     // (browser tabs, language servers, ...) are left alone — we only want to
@@ -241,6 +314,9 @@ fn run(policy: Policy, opts: WatchOptions, stop: Arc<AtomicBool>, tx: Sender<Wat
         policy,
         lineage,
         opts,
+        titles,
+        last_close_tab: None,
+        title_attempts: None,
         pending: HashMap::new(),
         last_notice: HashMap::new(),
         last_fg: 0,
@@ -279,9 +355,7 @@ fn run(policy: Policy, opts: WatchOptions, stop: Arc<AtomicBool>, tx: Sender<Wat
         }
         known = alive;
 
-        if opts.guard_foreground {
-            judge.guard_foreground(now);
-        }
+        judge.guard_foreground(now);
     }
     log::info!("watcher stopped");
 }

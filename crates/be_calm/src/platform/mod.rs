@@ -18,6 +18,7 @@ pub struct Foreground {
     pub hwnd: isize,
     pub pid: u32,
     pub exe: Option<PathBuf>,
+    pub title: String,
 }
 
 #[cfg(windows)]

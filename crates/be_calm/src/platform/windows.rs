@@ -14,6 +14,9 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_W,
+};
 use windows::Win32::UI::Shell::{SHAppBarMessage, ShellExecuteW, APPBARDATA};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
@@ -209,11 +212,44 @@ pub mod process {
                     }
                 }
             }
+            let mut buf = [0u16; 512];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
             Some(Foreground {
                 hwnd: hwnd.0 as isize,
                 pid,
                 exe,
+                title,
             })
+        }
+    }
+
+    /// Send Ctrl+W to the foreground window (closes the current browser tab).
+    pub fn send_close_tab() {
+        fn key(vk: u16, up: bool) -> INPUT {
+            INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(vk),
+                        dwFlags: if up {
+                            KEYEVENTF_KEYUP
+                        } else {
+                            Default::default()
+                        },
+                        ..Default::default()
+                    },
+                },
+            }
+        }
+        let seq = [
+            key(VK_CONTROL.0, false),
+            key(VK_W.0, false),
+            key(VK_W.0, true),
+            key(VK_CONTROL.0, true),
+        ];
+        unsafe {
+            SendInput(&seq, std::mem::size_of::<INPUT>() as i32);
         }
     }
 
