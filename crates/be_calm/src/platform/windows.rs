@@ -190,6 +190,11 @@ pub mod process {
             if pid == 0 {
                 return None;
             }
+            // Never touch our own window from the watcher thread: reading its
+            // title would send WM_GETTEXT to the UI thread and could deadlock.
+            if pid == std::process::id() {
+                return None;
+            }
             let mut exe = exe_path(pid);
             let is_frame_host = exe
                 .as_ref()

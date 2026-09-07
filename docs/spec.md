@@ -88,12 +88,15 @@ as the "stop" signal to the user.
 
 ## Title blocklist (`be_calm_core::titles`)
 
-For windows that *are* allowed in the foreground, the title is checked
-against `blocked_titles` (case-insensitive substring; defaults cover the
+The foreground window's title is checked every 100 ms against
+`blocked_titles` (case-insensitive substring; defaults cover the
 usual video and social sites). On a match the watcher sends Ctrl+W, which
 closes the current tab in every major browser. If the same window still
 shows a blocked title after three presses (700 ms apart) it is not a
-browser, so the window is minimized instead. One notice per episode.
+browser, so the window is minimized instead. One notice per episode. This
+runs for whatever window is in front, independent of the foreground guard
+and of whether the app is on the allowlist — closing a YouTube tab is the
+point regardless of settings.
 
 ## Breaks and history
 
@@ -126,6 +129,16 @@ Manager, and that is by design.
 Pushing a `v*` tag builds a release zip on `windows-latest` and attaches it
 to a GitHub Release (`.github/workflows/release.yml`). The binary is
 unsigned; SmartScreen will warn on first run.
+
+## Shutdown
+
+The watcher runs on its own thread and calls window APIs that send messages
+to the UI thread (e.g. reading the foreground window's title). Ending a
+session therefore must not block the UI thread waiting for that thread: on
+stop the UI thread only sets the stop flag and detaches; the watcher sees
+the flag and exits within one poll, re-checking it before it does any more
+enforcing. (Joining here once caused a hard freeze: the UI thread waited on
+the watcher while the watcher's title read waited on the UI thread.)
 
 ## Known limitations / ideas
 

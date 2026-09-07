@@ -35,6 +35,11 @@ pushes. Keep this file short and current.
 
 ## Gotchas found the hard way
 
+- Never `join()` the watcher thread from the UI thread. The watcher reads the
+  foreground window's title (`GetWindowTextW`), which sends `WM_GETTEXT` to
+  the owning UI thread; if the UI thread is blocked in `join()` the two
+  deadlock (froze the app on "終える"). Detach on stop instead.
+
 - Already-running apps keep spawning children (browser tabs, sync helpers).
   They are trusted at session start; only *new* app launches are judged.
 - Parent PIDs can point at a process that exited before the next poll, so

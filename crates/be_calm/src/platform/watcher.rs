@@ -94,9 +94,12 @@ impl Watcher {
 
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        // Detach rather than join. The watcher thread calls window APIs
+        // (e.g. reading the foreground window's title) that send messages to
+        // the UI thread; if the UI thread blocked here in join() while such a
+        // call was in flight, the two would deadlock. The thread sees the
+        // stop flag and exits on its own within one poll.
+        self.handle.take();
     }
 }
 
@@ -212,10 +215,17 @@ impl Judge {
                 verdict
             );
         }
-        if allowed {
-            self.guard_title(&fg, now);
+        // A blocked title (e.g. a YouTube tab) is closed no matter what app
+        // it is in and regardless of the minimize setting — that is the whole
+        // point of the title list.
+        if self.guard_title(&fg, now) {
             return;
         }
+        // An allowed app with an acceptable title may stay in front.
+        if allowed {
+            return;
+        }
+        // A disallowed app in the foreground is pushed back, if that is on.
         if !self.opts.guard_foreground {
             return;
         }
@@ -236,20 +246,21 @@ impl Judge {
 }
 
 impl Judge {
-    /// Close the current tab of an allowed window whose title is blocked.
+    /// Close the current tab of a foreground window whose title is blocked.
     /// If Ctrl+W does not make the title go away after a few tries (the app
-    /// is not a browser), fall back to minimizing the window.
-    fn guard_title(&mut self, fg: &super::Foreground, now: Instant) {
+    /// is not a browser), fall back to minimizing the window. Returns true if
+    /// the title matched (so the caller does not also try to minimize it).
+    fn guard_title(&mut self, fg: &super::Foreground, now: Instant) -> bool {
         let Some(keyword) = be_calm_core::titles::blocked_keyword(&fg.title, &self.titles.keywords)
         else {
             self.title_attempts = None;
-            return;
+            return false;
         };
         if self
             .last_close_tab
             .is_some_and(|t| now.duration_since(t) < TITLE_CLOSE_GAP)
         {
-            return;
+            return true;
         }
         self.last_close_tab = Some(now);
         let attempts = match self.title_attempts {
@@ -274,6 +285,7 @@ impl Judge {
                 title: fg.title.clone(),
             });
         }
+        true
     }
 }
 
@@ -325,6 +337,11 @@ fn run(
 
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(POLL_INTERVAL);
+        // Re-check before doing (or enforcing) anything, so a session that is
+        // ending does not get one last block/minimize after the user quit.
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
         let now = Instant::now();
         let current = process::list();
         let alive: HashSet<u32> = current.iter().map(|p| p.pid).collect();
