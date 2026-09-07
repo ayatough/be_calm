@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/be_calm.exe dist/
+          Copy-Item README.md, LICENSE, docs/spec.md dist/
+          Compress-Archive -Path dist/* -DestinationPath "be_calm-$v-windows-x64.zip"
+          Get-FileHash "be_calm-$v-windows-x64.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  be_calm-$v-windows-x64.zip" } | Set-Content "be_calm-$v-windows-x64.zip.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            be_calm-*.zip
+            be_calm-*.sha256
+          generate_release_notes: true

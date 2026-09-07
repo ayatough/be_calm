@@ -86,6 +86,24 @@ as the "stop" signal to the user.
   and via `be_calm --restore`, a leftover marker triggers a full restore. A
   panic hook does the same.
 
+## Title blocklist (`be_calm_core::titles`)
+
+For windows that *are* allowed in the foreground, the title is checked
+against `blocked_titles` (case-insensitive substring; defaults cover the
+usual video and social sites). On a match the watcher sends Ctrl+W, which
+closes the current tab in every major browser. If the same window still
+shows a blocked title after three presses (700 ms apart) it is not a
+browser, so the window is minimized instead. One notice per episode.
+
+## Breaks and history
+
+When a session runs to completion and `break_minutes > 0`, a break screen
+counts down and offers to start the next session with the same settings.
+Every finished session (early or not) is appended as one JSON object per
+line to `history.jsonl` (`started` in local time with offset, planned and
+elapsed seconds, block count, `ended_early`, app names). The setup screen
+shows today's total and the last five records.
+
 ## Early exit
 
 The window's close request is cancelled during a session. Ending early
@@ -103,11 +121,17 @@ Manager, and that is by design.
 | `--dry-watch [secs]` | run the watcher with the saved config, print events; shell untouched |
 | `--shell-test` | hide taskbar + icons for 6 s, restore, exit |
 
+## Release
+
+Pushing a `v*` tag builds a release zip on `windows-latest` and attaches it
+to a GitHub Release (`.github/workflows/release.yml`). The binary is
+unsigned; SmartScreen will warn on first run.
+
 ## Known limitations / ideas
 
-- **Browsers:** allowing a browser allows every website. Options for later:
-  window-title watching (close tabs whose title matches a blocklist), a
-  `hosts`-file blocklist (needs admin), or a browser extension.
+- **Browsers:** the title blocklist is a heuristic. Sites that hide their
+  name from the tab title slip through; a `hosts`-file blocklist (needs
+  admin) or a browser extension would be stricter.
 - **Launchers:** allowing Steam allows every game Steam launches (trust
   flows down the tree). Intentional; choose allowed apps accordingly.
 - **UWP apps in the picker:** some show up as `ApplicationFrameHost.exe`.

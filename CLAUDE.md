@@ -26,6 +26,10 @@ pushes. Keep this file short and current.
 - Manual verification on the owner's PC uses the CLI switches
   (`--dry-watch`, `--list-windows`, `--shell-test`, `--restore`) so behaviour
   can be checked without clicking through the GUI.
+- The owner uses this PC while you test. `--dry-watch` with a test config
+  that omits their apps will minimize their windows (foreground guard) —
+  set `guard_foreground = false` and a unique `blocked_titles` keyword in
+  test configs, and restore their config afterwards.
 - Don't kill processes you didn't start during a test. Use harmless
   probes (e.g. `mintty -e sleep 30`) as the "distraction".
 

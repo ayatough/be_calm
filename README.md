@@ -16,6 +16,13 @@ Written in Rust (egui + Win32). No admin rights, no drivers, no kernel hooks.
   windows reclaim the space) and desktop icons hidden. Both are restored when
   the session ends — or on the next launch / `be_calm --restore` if the app
   ever dies mid-session.
+- **Browser tabs, too.** Allowing a browser would allow every website, so
+  windows whose title contains a blocked keyword (YouTube, Twitch, Netflix,
+  ... — editable) get their tab closed with Ctrl+W. If the app ignores that,
+  the window is minimized instead.
+- **Breaks and a record.** An optional break countdown follows every
+  completed session, and every session is logged to `history.jsonl`; the
+  setup screen shows today's total and the last few sessions.
 - **Friction to quit.** The window can't simply be closed while a session is
   running; ending early requires typing a sentence you chose in advance.
 - **Already-open apps stay out of the way.** They are not closed (unsaved
@@ -23,10 +30,23 @@ Written in Rust (egui + Win32). No admin rights, no drivers, no kernel hooks.
   taskbar — it is minimized right away. Background helpers without a window
   are left alone unless you enable strict mode.
 
+## Install
+
+Download `be_calm-<version>-windows-x64.zip` from the
+[releases page](https://github.com/ayatough/be_calm/releases), unzip, run
+`be_calm.exe`. No installer, no admin. (Windows SmartScreen may warn about an
+unsigned binary the first time; "More info → Run anyway".)
+
+Or build it yourself:
+
+```
+cargo install --git https://github.com/ayatough/be_calm be_calm
+```
+
 ## Usage
 
 ```
-cargo run --release
+be_calm
 ```
 
 Command line switches (all exit without showing the GUI):
@@ -38,7 +58,7 @@ Command line switches (all exit without showing the GUI):
 | `--dry-watch [secs]` | run the process watcher with the saved config and print what it blocks; does not touch the shell |
 | `--shell-test` | hide taskbar + icons for six seconds, then restore |
 
-Config and log live in `%APPDATA%\be_calm\config\`.
+Config, history and log live in `%APPDATA%\be_calm\config\`.
 
 ## Development
 
