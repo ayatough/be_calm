@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["crates/be_calm_core", "crates/be_calm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/ayatough/be_calm"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+directories = "6"
+log = "0.4"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true

@@ -1,0 +1,12 @@
+[package]
+name = "be_calm_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Platform-independent logic for be_calm: allowlist policy, session state, config"
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
