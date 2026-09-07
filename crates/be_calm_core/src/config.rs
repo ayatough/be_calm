@@ -20,10 +20,7 @@ pub struct AllowedApp {
 impl AllowedApp {
     pub fn from_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let name = file_stem_of(&path);
         Self { name, path }
     }
 }
@@ -145,6 +142,23 @@ pub fn config_path() -> PathBuf {
     data_dir().join("config.toml")
 }
 
+/// File name component of a Windows path, split on either separator.
+/// (`std::path` only understands backslashes on Windows, and the core crate
+/// is tested on Linux too.)
+pub fn file_name_of(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    s.rsplit(['\\', '/']).next().unwrap_or(&s).to_string()
+}
+
+/// File name without its extension.
+pub fn file_stem_of(p: &Path) -> String {
+    let name = file_name_of(p);
+    match name.rfind('.') {
+        Some(i) if i > 0 => name[..i].to_string(),
+        _ => name,
+    }
+}
+
 /// Canonical, case-insensitive, slash-normalized form of a Windows path
 /// (also strips the `\\?\` verbatim prefix). Used for equality checks only.
 pub fn normalize_path(p: &Path) -> String {
@@ -231,6 +245,18 @@ path = "C:\\d.exe"
         c.save(&p).unwrap();
         assert_eq!(Config::load(&p).unwrap().session_minutes, 7);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_name_helpers_split_on_either_separator() {
+        assert_eq!(file_name_of(Path::new(r"C:\a\b.exe")), "b.exe");
+        assert_eq!(file_name_of(Path::new("C:/a/b.exe")), "b.exe");
+        assert_eq!(
+            file_stem_of(Path::new(r"C:\a\Foo Editor.exe")),
+            "Foo Editor"
+        );
+        assert_eq!(file_stem_of(Path::new(r"C:\a\noext")), "noext");
+        assert_eq!(file_stem_of(Path::new(r"C:\a\.hidden")), ".hidden");
     }
 
     #[test]

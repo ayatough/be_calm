@@ -2,7 +2,7 @@
 
 use crate::platform::watcher::{WatchEvent, Watcher};
 use crate::platform::{process, shell, WindowedApp};
-use be_calm_core::config::{config_path, MAX_ALLOWED_APPS};
+use be_calm_core::config::{config_path, file_stem_of, MAX_ALLOWED_APPS};
 use be_calm_core::session::{exit_challenge_passed, format_clock};
 use be_calm_core::{AllowedApp, Config, Policy, Session, SessionSummary};
 use egui::{Color32, RichText, ViewportCommand, WindowLevel};
@@ -211,11 +211,7 @@ impl BeCalmApp {
                     .max_height(360.0)
                     .show(ui, |ui| {
                         for app in &list {
-                            let name = app
-                                .exe
-                                .file_stem()
-                                .map(|s| s.to_string_lossy().into_owned())
-                                .unwrap_or_default();
+                            let name = file_stem_of(&app.exe);
                             if ui
                                 .button(format!("{name}  —  {}", truncate(&app.title, 60)))
                                 .on_hover_text(app.exe.to_string_lossy())
@@ -248,10 +244,7 @@ impl BeCalmApp {
             match ev {
                 WatchEvent::Blocked { pid, exe } => {
                     log::info!("ui: blocked pid {pid}");
-                    let name = exe
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let name = file_stem_of(&exe);
                     state.toast =
                         Some((format!("{name} を閉じました。今は集中する時間です。"), now));
                     state.session.record_block(now, exe);
@@ -259,10 +252,7 @@ impl BeCalmApp {
                 }
                 WatchEvent::KillFailed { pid, exe, reason } => {
                     log::info!("ui: kill failed pid {pid}");
-                    let name = exe
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                    let name = file_stem_of(&exe);
                     state.toast = Some((format!("{name} を閉じられませんでした ({reason})"), now));
                 }
             }

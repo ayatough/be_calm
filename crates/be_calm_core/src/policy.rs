@@ -55,9 +55,7 @@ pub struct Policy {
 }
 
 fn file_name_of(p: &Path) -> String {
-    p.file_name()
-        .map(|s| s.to_string_lossy().to_lowercase())
-        .unwrap_or_default()
+    crate::config::file_name_of(p).to_lowercase()
 }
 
 fn is_store_app(normalized: &str) -> bool {
