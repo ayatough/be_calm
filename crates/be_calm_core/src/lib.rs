@@ -9,6 +9,6 @@ pub mod policy;
 pub mod session;
 
 pub use config::{AllowedApp, Config, MAX_ALLOWED_APPS};
-pub use lineage::{Decision, Lineage};
+pub use lineage::{foreground_allowed, Decision, Lineage, Origin};
 pub use policy::{Policy, Verdict};
 pub use session::{BlockEvent, Session, SessionSummary};

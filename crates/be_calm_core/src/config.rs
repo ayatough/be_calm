@@ -35,6 +35,9 @@ pub struct Config {
     /// Kill disallowed processes even if they never show a window. Off by
     /// default so background helpers (cloud sync, updaters) are left alone.
     pub block_windowless: bool,
+    /// Minimize any disallowed window that reaches the foreground (covers
+    /// Alt+Tab, the Win key, and apps that were already open).
+    pub guard_foreground: bool,
     pub exit_phrase: String,
 }
 
@@ -46,6 +49,7 @@ impl Default for Config {
             hide_taskbar: true,
             hide_desktop_icons: true,
             block_windowless: false,
+            guard_foreground: true,
             exit_phrase: DEFAULT_EXIT_PHRASE.to_string(),
         }
     }

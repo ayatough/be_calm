@@ -52,6 +52,9 @@ pub struct Policy {
     rules: Vec<Rule>,
     system_roots: Vec<String>,
     self_exe: Option<String>,
+    /// Another copy of be_calm (debug vs release build, an older version)
+    /// must not be treated as a distraction, so the file name counts too.
+    self_name: String,
 }
 
 fn file_name_of(p: &Path) -> String {
@@ -96,12 +99,15 @@ impl Policy {
             rules,
             system_roots,
             self_exe: self_exe.map(normalize_path),
+            self_name: self_exe.map(file_name_of).unwrap_or_default(),
         }
     }
 
     pub fn verdict(&self, exe: &Path) -> Verdict {
         let n = normalize_path(exe);
-        if self.self_exe.as_deref() == Some(n.as_str()) {
+        if self.self_exe.as_deref() == Some(n.as_str())
+            || (!self.self_name.is_empty() && file_name_of(exe) == self.self_name)
+        {
             return Verdict::AllowSelf;
         }
         if self.system_roots.iter().any(|r| n.starts_with(r.as_str())) {
@@ -143,6 +149,11 @@ mod tests {
     fn self_is_allowed() {
         assert_eq!(
             policy().verdict(Path::new(r"c:\users\ME\BE_CALM.EXE")),
+            Verdict::AllowSelf
+        );
+        // another build of be_calm elsewhere is still "self"
+        assert_eq!(
+            policy().verdict(Path::new(r"D:\build\release\be_calm.exe")),
             Verdict::AllowSelf
         );
     }

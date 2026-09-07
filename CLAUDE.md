@@ -39,3 +39,9 @@ pushes. Keep this file short and current.
   toggle command (`WM_COMMAND 0x7402`) instead of `ShowWindow` on it.
 - `Start-Process -WindowStyle Hidden` makes some console apps exit at once;
   prefer `mintty` as a windowed probe when testing on the owner's PC.
+- `SetForegroundWindow` / `AppActivate` from a script do not reliably move
+  focus (foreground lock). To test the foreground guard, start the probe
+  window *before* `--dry-watch`, then click into it with a real input tool.
+- The owner may have a release build running while you test a debug build.
+  Self-detection is by file name so the two never fight; also never
+  `Stop-Process -Name be_calm` blindly — check the path first.

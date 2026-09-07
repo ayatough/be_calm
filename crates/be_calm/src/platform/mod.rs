@@ -11,6 +11,15 @@ pub struct WindowedApp {
     pub exe: PathBuf,
 }
 
+/// The window currently in the foreground and its owning process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreground {
+    /// Raw HWND. Only meaningful on the thread/OS that produced it.
+    pub hwnd: isize,
+    pub pid: u32,
+    pub exe: Option<PathBuf>,
+}
+
 #[cfg(windows)]
 pub mod windows;
 #[cfg(windows)]

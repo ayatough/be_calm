@@ -1,6 +1,6 @@
 //! The egui application: setup screen -> focus screen -> summary.
 
-use crate::platform::watcher::{WatchEvent, Watcher};
+use crate::platform::watcher::{WatchEvent, WatchOptions, Watcher};
 use crate::platform::{process, shell, WindowedApp};
 use be_calm_core::config::{config_path, file_stem_of, MAX_ALLOWED_APPS};
 use be_calm_core::session::{exit_challenge_passed, format_clock};
@@ -95,7 +95,13 @@ impl BeCalmApp {
         );
         self.screen = Screen::Focus(FocusState {
             session,
-            watcher: Watcher::start(policy, self.cfg.block_windowless),
+            watcher: Watcher::start(
+                policy,
+                WatchOptions {
+                    block_windowless: self.cfg.block_windowless,
+                    guard_foreground: self.cfg.guard_foreground,
+                },
+            ),
             show_exit: false,
             exit_input: String::new(),
             toast: None,
@@ -169,6 +175,18 @@ impl BeCalmApp {
             &mut self.cfg.hide_desktop_icons,
             "デスクトップのアイコンを隠す",
         );
+        ui.checkbox(
+            &mut self.cfg.guard_foreground,
+            "許可外のウィンドウが前に来たら最小化する",
+        )
+        .on_hover_text(
+            "Alt+Tab や Win キーで既に開いているアプリに切り替えても、すぐ最小化されます。",
+        );
+        ui.checkbox(
+            &mut self.cfg.block_windowless,
+            "ウィンドウを持たない裏方プロセスも止める（厳格モード）",
+        )
+        .on_hover_text("通常はウィンドウを表示したアプリだけを止めます。OneDrive などの補助プロセスを巻き込まないためです。");
         ui.collapsing("途中で抜けるときに入力する文", |ui| {
             ui.text_edit_multiline(&mut self.cfg.exit_phrase);
         });
@@ -248,6 +266,12 @@ impl BeCalmApp {
                     state.toast =
                         Some((format!("{name} を閉じました。今は集中する時間です。"), now));
                     state.session.record_block(now, exe);
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+                WatchEvent::Foreground { pid, exe } => {
+                    log::info!("ui: foreground pushed back pid {pid}");
+                    let name = file_stem_of(&exe);
+                    state.toast = Some((format!("{name} は今は使えません。"), now));
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                 }
                 WatchEvent::KillFailed { pid, exe, reason } => {

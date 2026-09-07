@@ -47,7 +47,13 @@ fn dry_watch(secs: u64) {
             .map(|a| a.path.display().to_string())
             .collect::<Vec<_>>()
     );
-    let watcher = platform::watcher::Watcher::start(policy, cfg.block_windowless);
+    let watcher = platform::watcher::Watcher::start(
+        policy,
+        platform::watcher::WatchOptions {
+            block_windowless: cfg.block_windowless,
+            guard_foreground: cfg.guard_foreground,
+        },
+    );
     let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
     while std::time::Instant::now() < end {
         while let Some(ev) = watcher.try_recv() {

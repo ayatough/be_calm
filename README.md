@@ -18,9 +18,10 @@ Written in Rust (egui + Win32). No admin rights, no drivers, no kernel hooks.
   ever dies mid-session.
 - **Friction to quit.** The window can't simply be closed while a session is
   running; ending early requires typing a sentence you chose in advance.
-- **Nothing you already had open is touched.** Only processes started after
-  the session begins are judged, and background helpers without a window are
-  left alone unless you enable strict mode.
+- **Already-open apps stay out of the way.** They are not closed (unsaved
+  work is safe), but if one of them comes to the front — Alt+Tab, Win key,
+  taskbar — it is minimized right away. Background helpers without a window
+  are left alone unless you enable strict mode.
 
 ## Usage
 

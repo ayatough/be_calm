@@ -47,7 +47,21 @@ For each new process, in order:
 Trust seeding: at session start every already-running non-system process
 is trusted, so an open browser's new tabs or a sync client's helpers are
 never touched. System processes (explorer, shells) are *not* trusted,
-because they are how new apps get launched.
+because they are how new apps get launched. Trust has an origin: trees
+under an allowed app are `Listed`; other pre-existing apps are
+`Grandfathered` (may keep spawning, may not be used — see below).
+
+## Foreground guard
+
+Processes are only half the story: an app that was already open can be
+reached with Alt+Tab, the Win key, or the taskbar. So the watcher also
+polls the foreground window every 100 ms. If it belongs to a process that
+is not allowed to be used (rule: system, self, listed, same-dir, or in a
+`Listed` tree), the window is minimized and be_calm asks for focus. The
+user sees the window for at most one poll before it drops away. UWP apps
+are hosted by `ApplicationFrameHost.exe`; the real owner is found through
+the `Windows.UI.Core.CoreWindow` child. `guard_foreground = false` turns
+this off.
 
 Blocking means `TerminateProcess`. By default a blocked process is only
 killed once it owns a visible top-level window (checked every poll), so
@@ -101,4 +115,8 @@ Manager, and that is by design.
 - **Notifications / Focus Assist:** no public API on Windows 11; not handled.
 - **Global emergency hotkey:** not implemented; `--restore` covers recovery.
 - **Already-open distractions** are not closed at session start (safety:
-  unsaved work). Could become an opt-in "close these now" step.
+  unsaved work); they are minimized whenever they come to the front
+  instead. Hiding them from Alt+Tab entirely, or closing them, could
+  become opt-in steps.
+- **Two copies of be_calm** (e.g. debug and release builds) recognise each
+  other by file name and never fight.

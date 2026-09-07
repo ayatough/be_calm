@@ -1,7 +1,7 @@
 //! Win32 integration: process table, termination, window enumeration,
 //! and shell tweaks (taskbar / desktop icons).
 
-use super::WindowedApp;
+use super::{Foreground, WindowedApp};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use windows::core::{w, BOOL, PCWSTR, PWSTR};
@@ -16,9 +16,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{SHAppBarMessage, ShellExecuteW, APPBARDATA};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, FindWindowW, GetWindow, GetWindowLongPtrW, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindowVisible, SendMessageW, ShowWindow, GWL_EXSTYLE, GW_OWNER,
-    SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WM_COMMAND, WS_EX_TOOLWINDOW,
+    EnumWindows, FindWindowExW, FindWindowW, GetForegroundWindow, GetWindow, GetWindowLongPtrW,
+    GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SendMessageW, ShowWindow,
+    GWL_EXSTYLE, GW_OWNER, SW_HIDE, SW_MINIMIZE, SW_SHOW, SW_SHOWNORMAL, WM_COMMAND,
+    WS_EX_TOOLWINDOW,
 };
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -170,6 +171,57 @@ pub mod process {
             let _ = EnumWindows(Some(cb), LPARAM(&mut pids as *mut _ as isize));
         }
         pids
+    }
+
+    /// The foreground window and the PID that really owns it. UWP/Store apps
+    /// are hosted by `ApplicationFrameHost.exe`; for those we look for the
+    /// app's `Windows.UI.Core.CoreWindow` child to find the actual process.
+    pub fn foreground() -> Option<Foreground> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.0.is_null() {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 {
+                return None;
+            }
+            let mut exe = exe_path(pid);
+            let is_frame_host = exe
+                .as_ref()
+                .map(|e| {
+                    be_calm_core::config::file_name_of(e)
+                        .eq_ignore_ascii_case("ApplicationFrameHost.exe")
+                })
+                .unwrap_or(false);
+            if is_frame_host {
+                if let Ok(core) =
+                    FindWindowExW(Some(hwnd), None, w!("Windows.UI.Core.CoreWindow"), None)
+                {
+                    if !core.0.is_null() {
+                        let mut app_pid = 0u32;
+                        GetWindowThreadProcessId(core, Some(&mut app_pid));
+                        if app_pid != 0 {
+                            pid = app_pid;
+                            exe = exe_path(pid);
+                        }
+                    }
+                }
+            }
+            Some(Foreground {
+                hwnd: hwnd.0 as isize,
+                pid,
+                exe,
+            })
+        }
+    }
+
+    /// Minimize a window (by raw handle from `foreground()`).
+    pub fn minimize(hwnd: isize) {
+        unsafe {
+            let _ = ShowWindow(HWND(hwnd as *mut _), SW_MINIMIZE);
+        }
     }
 
     /// Launch an app the way the shell would (works for Store apps too).

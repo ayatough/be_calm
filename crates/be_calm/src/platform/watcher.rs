@@ -1,19 +1,28 @@
-//! Background thread that polls the process table and kills newcomers the
-//! policy rejects. Only processes that appear *after* the watcher starts are
-//! considered, so whatever the user already had open is left alone.
+//! Background thread that enforces the session:
+//!
+//! - polls the process table and kills newcomers the policy rejects (only
+//!   processes that appear *after* the watcher starts; what the user already
+//!   had open is left running), and
+//! - polls the foreground window and minimizes it if it belongs to an app
+//!   that is not allowed (this is what makes Alt+Tab / Win key useless for
+//!   getting at an already-open distraction).
+//!
 //! Children of allowed apps inherit permission (see `be_calm_core::lineage`).
 
 use super::process::{self, ProcInfo};
-use be_calm_core::{Lineage, Policy, Verdict};
+use be_calm_core::{foreground_allowed, Lineage, Origin, Policy, Verdict};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Minimum gap between two foreground notices for the same window, so a
+/// window fighting to come back does not flood the UI.
+const FOREGROUND_NOTICE_GAP: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
@@ -27,6 +36,19 @@ pub enum WatchEvent {
         exe: PathBuf,
         reason: String,
     },
+    /// A disallowed window reached the foreground and was minimized.
+    Foreground {
+        pid: u32,
+        exe: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct WatchOptions {
+    /// Kill rejected processes immediately instead of waiting for a window.
+    pub block_windowless: bool,
+    /// Minimize disallowed foreground windows.
+    pub guard_foreground: bool,
 }
 
 pub struct Watcher {
@@ -36,16 +58,13 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    /// `block_windowless`: kill rejected processes immediately. Otherwise a
-    /// rejected process is only killed once it shows a visible window, so
-    /// background helpers (sync clients, updaters) are left alone.
-    pub fn start(policy: Policy, block_windowless: bool) -> Self {
+    pub fn start(policy: Policy, opts: WatchOptions) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let stop2 = stop.clone();
         let handle = std::thread::Builder::new()
             .name("be_calm-watcher".into())
-            .spawn(move || run(policy, block_windowless, stop2, tx))
+            .spawn(move || run(policy, opts, stop2, tx))
             .expect("spawn watcher thread");
         Self {
             stop,
@@ -75,9 +94,13 @@ impl Drop for Watcher {
 struct Judge {
     policy: Policy,
     lineage: Lineage,
-    block_windowless: bool,
+    opts: WatchOptions,
     /// Rejected processes waiting to show a window before we kill them.
     pending: HashMap<u32, PathBuf>,
+    /// Last time we reported a given window being pushed back.
+    last_notice: HashMap<isize, Instant>,
+    /// Last foreground window seen (for change logging only).
+    last_fg: isize,
     tx: Sender<WatchEvent>,
 }
 
@@ -101,7 +124,7 @@ impl Judge {
         if !decision.is_blocked() {
             return;
         }
-        if self.block_windowless {
+        if self.opts.block_windowless {
             self.kill(p.pid, exe);
         } else {
             self.pending.insert(p.pid, exe.clone());
@@ -146,46 +169,91 @@ impl Judge {
             }
         }
     }
+
+    /// Push back a foreground window that belongs to a disallowed app.
+    fn guard_foreground(&mut self, now: Instant) {
+        let Some(fg) = process::foreground() else {
+            return;
+        };
+        if fg.pid == std::process::id() {
+            return;
+        }
+        let Some(exe) = fg.exe.as_ref() else { return };
+        let verdict = self.policy.verdict(exe);
+        let allowed = foreground_allowed(&self.lineage, fg.pid, verdict);
+        if fg.hwnd != self.last_fg {
+            self.last_fg = fg.hwnd;
+            log::debug!(
+                "foreground hwnd {:#x} pid {} {} -> {:?} allowed={allowed}",
+                fg.hwnd,
+                fg.pid,
+                exe.display(),
+                verdict
+            );
+        }
+        if allowed {
+            return;
+        }
+        process::minimize(fg.hwnd);
+        let notify = self
+            .last_notice
+            .get(&fg.hwnd)
+            .is_none_or(|t| now.duration_since(*t) >= FOREGROUND_NOTICE_GAP);
+        if notify {
+            self.last_notice.insert(fg.hwnd, now);
+            log::info!("pushed back foreground pid {} {}", fg.pid, exe.display());
+            let _ = self.tx.send(WatchEvent::Foreground {
+                pid: fg.pid,
+                exe: exe.clone(),
+            });
+        }
+    }
 }
 
-fn run(policy: Policy, block_windowless: bool, stop: Arc<AtomicBool>, tx: Sender<WatchEvent>) {
+fn run(policy: Policy, opts: WatchOptions, stop: Arc<AtomicBool>, tx: Sender<WatchEvent>) {
     // Baseline: everything alive right now is grandfathered in, and every
     // already-running *user* app is trusted so the helpers it keeps spawning
     // (browser tabs, language servers, ...) are left alone — we only want to
     // stop apps the user tries to open from now on. System processes
     // (explorer, shells) are deliberately not trusted: they are how new apps
-    // get launched.
+    // get launched. Already-running allowed apps are `Listed` so their
+    // windows may be used; everything else is `Grandfathered` (may spawn,
+    // may not be in front).
     let mut lineage = Lineage::new();
     let baseline = process::list();
     for p in &baseline {
         if let Some(exe) = &p.exe {
             match policy.verdict(exe) {
-                Verdict::AllowListed | Verdict::AllowSameDir | Verdict::Block => {
-                    lineage.trust(p.pid)
+                Verdict::AllowListed | Verdict::AllowSameDir => {
+                    lineage.trust(p.pid, Origin::Listed)
                 }
+                Verdict::Block => lineage.trust(p.pid, Origin::Grandfathered),
                 Verdict::AllowSystem | Verdict::AllowSelf => {}
             }
         }
     }
     let mut known: HashSet<u32> = baseline.iter().map(|p| p.pid).collect();
     log::info!(
-        "watcher started; {} existing processes ignored",
+        "watcher started; {} existing processes ignored; {opts:?}",
         known.len()
     );
     let mut judge = Judge {
         policy,
         lineage,
-        block_windowless,
+        opts,
         pending: HashMap::new(),
+        last_notice: HashMap::new(),
+        last_fg: 0,
         tx,
     };
 
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(POLL_INTERVAL);
+        let now = Instant::now();
         let current = process::list();
-        let now: HashSet<u32> = current.iter().map(|p| p.pid).collect();
-        judge.lineage.retain_alive(&now);
-        judge.sweep_pending(&now);
+        let alive: HashSet<u32> = current.iter().map(|p| p.pid).collect();
+        judge.lineage.retain_alive(&alive);
+        judge.sweep_pending(&alive);
 
         // A parent and its child can show up in the same snapshot, in any
         // order. Judge processes whose parent is already settled first, and
@@ -209,7 +277,11 @@ fn run(policy: Policy, block_windowless: bool, stop: Arc<AtomicBool>, tx: Sender
             }
             fresh = deferred;
         }
-        known = now;
+        known = alive;
+
+        if opts.guard_foreground {
+            judge.guard_foreground(now);
+        }
     }
     log::info!("watcher stopped");
 }

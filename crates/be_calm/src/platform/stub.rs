@@ -1,6 +1,6 @@
 //! Non-Windows stubs so the binary compiles (and the UI can be poked at) elsewhere.
 
-use super::WindowedApp;
+use super::{Foreground, WindowedApp};
 use std::path::{Path, PathBuf};
 
 pub mod process {
@@ -25,6 +25,10 @@ pub mod process {
     pub fn pids_with_visible_windows() -> std::collections::HashSet<u32> {
         Default::default()
     }
+    pub fn foreground() -> Option<Foreground> {
+        None
+    }
+    pub fn minimize(_hwnd: isize) {}
     pub fn launch(path: &Path) -> Result<(), String> {
         std::process::Command::new(path)
             .spawn()
